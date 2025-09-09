@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Detector de objetos + Sentimientos (Minimal)</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { font-family: system-ui, Arial, sans-serif; color: #222; }
+    body { max-width: 920px; margin: 20px auto; padding: 18px; background: #fafafa; }
+    h1 { margin: 0 0 10px 0; font-size: 1.4rem; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+    input[type=file], button, textarea { padding:8px; border-radius:8px; border:1px solid #dcdcdc; }
+    button { background:#0a84ff; color:white; border:none; cursor:pointer; }
+    button:disabled { background:#9bbcf6; cursor:not-allowed; }
+    #canvasWrap { position:relative; border:1px solid #e6e6e6; display:inline-block; max-width:100%; }
+    canvas { display:block; max-width:100%; height:auto; }
+    .box { position:absolute; border:2px solid rgba(10,132,255,0.9); pointer-events:none; box-sizing:border-box; }
+    .comment { border-radius:8px; padding:8px; margin-bottom:8px; border:1px solid #e6e6e6; background:#fff; }
+    .positive { background:#e8f5e9; } .negative { background:#ffebee; } .neutral { background:#f3f4f6; }
+    #analysisResult { margin-top:8px; }
+  </style>
+</head>
+<body>
+  <h1>Sube una imagen — Detectar objetos y analizar sentimiento</h1>
+
+  <div class="controls">
+    <input id="fileInput" type="file" accept="image/*">
+    <button id="detectBtn" disabled>Detectar objetos</button>
+    <button id="clearBtn">Limpiar</button>
+    <small id="status">Cargando modelo...</small>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="imgCanvas"></canvas>
+  </div>
+
+  <section style="margin-top:14px">
+    <label for="commentText"><strong>Comentario sobre la imagen</strong></label><br>
+    <textarea id="commentText" rows="3" style="width:100%; margin-top:6px"></textarea>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button id="analyzeBtn">Analizar sentimiento</button>
+      <button id="saveCommentBtn">Guardar comentario</button>
+    </div>
+
+    <div id="analysisResult"></div>
+    <h3 style="margin-top:12px">Comentarios guardados</h3>
+    <div id="commentsList"></div>
+  </section>
+
+  <!-- TensorFlow.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+
+  <!-- Coco-SSD -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+  <!-- Sentiment (funciona en navegador) -->
+  <script src="https://cdn.jsdelivr.net/npm/sentiment@5.0.1/build/sentiment.min.js"></script>
+
+  <script>
+  (function () {
+    'use strict';
+
+    // Elementos
+    var fileInput = document.getElementById('fileInput');
+    var detectBtn = document.getElementById('detectBtn');
+    var clearBtn = document.getElementById('clearBtn');
+    var statusEl = document.getElementById('status');
+    var canvas = document.getElementById('imgCanvas');
+    var ctx = canvas.getContext('2d');
+    var canvasWrap = document.getElementById('canvasWrap');
+
+    var commentText = document.getElementById('commentText');
+    var analyzeBtn = document.getElementById('analyzeBtn');
+    var saveCommentBtn = document.getElementById('saveCommentBtn');
+    var analysisResult = document.getElementById('analysisResult');
+    var commentsList = document.getElementById('commentsList');
+
+    var model = null;
+    var currentImage = null;
+
+    // Inicializar modelo
+    (async function initModel() {
+      try {
+        statusEl.textContent = 'Cargando modelo...';
+        model = await cocoSsd.load();
+        statusEl.textContent = 'Modelo listo ✔️';
+        detectBtn.disabled = false;
+      } catch (err) {
+        console.error('Error cargando coco-ssd:', err);
+        statusEl.textContent = 'Error cargando modelo: ' + err.message;
+      }
+    })();
+
+    // Cargar imagen
+    fileInput.addEventListener('change', function (e) {
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      var img = new Image();
+      img.onload = function () {
+        var maxWidth = 900;
+        var scale = Math.min(1, maxWidth / img.width);
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        currentImage = { img: img, scale: scale };
+        removeBoxes();
+      };
+      img.src = URL.createObjectURL(file);
+    });
+
+    // Detectar objetos
+    detectBtn.addEventListener('click', async function () {
+      if (!model) return alert('El modelo aún no está listo.');
+      if (!currentImage) return alert('Sube primero una imagen.');
+      statusEl.textContent = 'Detectando...';
+      var predictions = await model.detect(canvas);
+      statusEl.textContent = 'Objetos encontrados: ' + predictions.length;
+      drawBoxes(predictions);
+    });
+
+    // Limpiar
+    clearBtn.addEventListener('click', function () {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      removeBoxes();
+      fileInput.value = '';
+      currentImage = null;
+      statusEl.textContent = model ? 'Modelo listo ✔️' : 'Cargando modelo...';
+    });
+
+    function removeBoxes() {
+      var old = canvasWrap.querySelectorAll('.box');
+      old.forEach(function (n) { n.remove(); });
+    }
+
+    function drawBoxes(predictions) {
+      if (currentImage && currentImage.img) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(currentImage.img, 0, 0, canvas.width, canvas.height);
+      }
+      removeBoxes();
+
+      ctx.font = Math.max(12, Math.round(canvas.width / 50)) + 'px sans-serif';
+      ctx.textBaseline = 'top';
+      predictions.forEach(function (p) {
+        var [x, y, w, h] = p.bbox;
+        ctx.strokeStyle = 'rgba(10,132,255,0.95)';
+        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 400));
+        ctx.strokeRect(x, y, w, h);
+        var labelText = p.class + ' (' + Math.round(p.score * 100) + '%)';
+        ctx.fillStyle = 'rgba(10,132,255,0.95)';
+        ctx.fillText(labelText, x + 4, (y > 18 ? y - 18 : y + 4));
+      });
+    }
+
+    // Sentiment
+    var sentiment = new Sentiment();
+
+    analyzeBtn.addEventListener('click', function () {
+      var text = commentText.value.trim();
+      if (!text) return alert('Escribe algo para analizar.');
+      var res = sentiment.analyze(text);
+      var score = res.score;
+      var label = 'Neutral', cls = 'neutral';
+      if (score > 0) { label = 'Positivo'; cls = 'positive'; }
+      if (score < 0) { label = 'Negativo'; cls = 'negative'; }
+
+      analysisResult.innerHTML = '';
+      var card = document.createElement('div');
+      card.className = 'comment ' + cls;
+      card.innerHTML = `
+        <div>${label} (score: ${score}, comparative: ${res.comparative.toFixed(3)})</div>
+        <div>Positivas: ${res.positive.length ? res.positive.join(', ') : '-'}</div>
+        <div>Negativas: ${res.negative.length ? res.negative.join(', ') : '-'}</div>
+      `;
+      analysisResult.appendChild(card);
+    });
+
+    // LocalStorage para comentarios
+    function loadComments() {
+      try {
+        return JSON.parse(localStorage.getItem('comments') || '[]');
+      } catch { return []; }
+    }
+    function saveComments(arr) {
+      localStorage.setItem('comments', JSON.stringify(arr));
+    }
+    function renderComments() {
+      var arr = loadComments();
+      commentsList.innerHTML = '';
+      arr.forEach(function (c) {
+        var d = document.createElement('div');
+        d.className = 'comment ' + (c.score > 0 ? 'positive' : c.score < 0 ? 'negative' : 'neutral');
+        d.innerHTML = `<p>${c.text}</p><small>${c.label} | ${new Date(c.date).toLocaleString()}</small>`;
+        commentsList.appendChild(d);
+      });
+    }
+
+    saveCommentBtn.addEventListener('click', function () {
+      var text = commentText.value.trim();
+      if (!text) return alert('Escribe un comentario para guardar.');
+      var res = sentiment.analyze(text);
+      var label = res.score > 0 ? 'Positivo' : res.score < 0 ? 'Negativo' : 'Neutral';
+      var arr = loadComments();
+      arr.unshift({ text: text, score: res.score, label: label, date: Date.now() });
+      saveComments(arr);
+      renderComments();
+      commentText.value = '';
+      analysisResult.innerHTML = '';
+    });
+
+    renderComments();
+
+  })();
+  </script>
+</body>
+</html>
